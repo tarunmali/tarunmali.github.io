@@ -1,0 +1,10 @@
+![image.png](/images/image-115.png)
+
+Tomcat is the Servlet container
+
+We have to deploy in it WAR
+
+# DS/ First Controller 
+
+![image.png](/images/image-116.png)
+

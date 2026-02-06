@@ -1,0 +1,266 @@
+<div id="file-tree-container">
+    <div style="padding: 20px; text-align: center; color: #666;">
+        Loading files...
+    </div>
+</div>
+
+<script>
+    // Levenshtein distance for fuzzy matching
+    function levenshteinDistance(str1, str2) {
+        const len1 = str1.length;
+        const len2 = str2.length;
+        const matrix = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+
+        for (let i = 0; i <= len1; i++) matrix[i][0] = i;
+        for (let j = 0; j <= len2; j++) matrix[0][j] = j;
+
+        for (let i = 1; i <= len1; i++) {
+            for (let j = 1; j <= len2; j++) {
+                const cost = str1[i - 1].toLowerCase() === str2[j - 1].toLowerCase() ? 0 : 1;
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j - 1] + cost
+                );
+            }
+        }
+        return matrix[len1][len2];
+    }
+
+    // Calculate fuzzy match score
+    function fuzzyScore(searchTerm, target) {
+        if (!searchTerm) return 100;
+        if (!target) return 0;
+
+        const search = searchTerm.toLowerCase();
+        const targetLower = target.toLowerCase();
+
+        if (targetLower === search) return 100;
+        if (targetLower.includes(search)) return 90;
+
+        const distance = levenshteinDistance(search, targetLower);
+        const maxLen = Math.max(search.length, targetLower.length);
+        const similarity = 1 - (distance / maxLen);
+
+        return Math.round(similarity * 80);
+    }
+
+    // Highlight matching characters
+    function highlightMatch(text, searchTerm) {
+        if (!searchTerm) return text;
+        const regex = new RegExp(`(${searchTerm.split('').join('.*?')})`, 'gi');
+        return text.replace(regex, '<mark style="background: yellow; font-weight: bold;">$1</mark>');
+    }
+
+    // Build file tree from flat list
+    function buildFileTree(files) {
+        const tree = {};
+
+        files.forEach(file => {
+            const parts = file.dir.split('/').filter(p => p);
+            let current = tree;
+
+            parts.forEach(part => {
+                if (!current[part]) {
+                    current[part] = { _files: [], _folders: {} };
+                }
+                current = current[part]._folders;
+            });
+
+            // Add file to the current folder
+            const parentParts = parts.length > 0 ? parts : ['root'];
+            let parent = tree;
+            for (let i = 0; i < parts.length - 1; i++) {
+                parent = parent[parts[i]]._folders;
+            }
+            if (parts.length > 0) {
+                const lastPart = parts[parts.length - 1];
+                if (!parent[lastPart]) {
+                    parent[lastPart] = { _files: [], _folders: {} };
+                }
+                parent[lastPart]._files.push(file);
+            } else {
+                if (!tree['root']) {
+                    tree['root'] = { _files: [], _folders: {} };
+                }
+                tree['root']._files.push(file);
+            }
+        });
+
+        return tree;
+    }
+
+    // Natural Sort Algorithm
+    const naturalSort = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
+
+    // Render tree as HTML
+    function renderTree(tree, level = 0) {
+        const ulClass = level === 0 ? 'class="file-tree"' : '';
+        let html = `<ul ${ulClass}>`;
+
+        Object.keys(tree).sort(naturalSort).forEach(key => {
+            if (key === 'root') return;
+
+            const node = tree[key];
+            const folderId = key.replace(/[^a-zA-Z0-9]/g, '-');
+
+            html += '<li>';
+            html += `<details id="folder-${folderId}" ${level < 1 ? 'open' : ''}>`;
+            html += `<summary style="cursor: pointer;">📂 <strong>${key}</strong></summary>`;
+
+            if (Object.keys(node._folders).length > 0) {
+                html += renderTree(node._folders, level + 1);
+            }
+
+            if (node._files && node._files.length > 0) {
+                // Sort files naturally by name
+                node._files.sort((a, b) => naturalSort(a.name, b.name));
+
+                html += '<ul>';
+                node._files.forEach(file => {
+                    html += `<li><a href="${baseUrl}${file.path}" class="file-link">${file.name}</a></li>`;
+                });
+                html += '</ul>';
+            }
+
+            html += '</details>';
+            html += '</li>';
+        });
+
+        // Root level files
+        if (tree['root'] && tree['root']._files) {
+            // Sort root files naturally
+            tree['root']._files.sort((a, b) => naturalSort(a.name, b.name));
+
+            tree['root']._files.forEach(file => {
+                html += `<li><a href="${baseUrl}${file.path}" class="file-link">${file.name}</a></li>`;
+            });
+        }
+
+        html += '</ul>';
+        return html;
+    }
+
+    // Baseurl-safe link building for GitHub Pages project sites
+    // (Declared here so renderTree() can use it.)
+    const baseUrl = '{{ "" | relative_url }}'.replace(/\/$/, "");
+
+    // Load and render files
+    const filesJsonUrl = '{{ "/assets/files.json" | relative_url }}?v={{ site.time | date: "%s" }}';
+    fetch(filesJsonUrl)
+        .then(res => {
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status} while fetching ${filesJsonUrl}`);
+            }
+            return res.json();
+        })
+        .then(files => {
+            console.log(`Loaded ${files.length} files`);
+
+            const container = document.getElementById('file-tree-container');
+            const tree = buildFileTree(files);
+            container.innerHTML = renderTree(tree);
+
+            // Scroll restoration moved to end of function
+
+            // Cache links after render (used by search + active highlighting)
+            const links = Array.from(document.querySelectorAll('.file-link'));
+
+            // Set up search
+            const searchInput = document.getElementById('fuzzy-search-input');
+            const searchStats = document.getElementById('search-stats');
+
+            searchInput.addEventListener('input', function (e) {
+                const searchTerm = e.target.value.trim();
+
+                if (!searchTerm) {
+                    // Reset
+                    document.querySelectorAll('.file-link').forEach(link => {
+                        link.parentElement.style.display = '';
+                        link.innerHTML = link.textContent;
+                    });
+                    document.querySelectorAll('details').forEach(d => d.style.display = '');
+                    searchStats.textContent = '';
+                    return;
+                }
+
+                // Score and filter
+                const scored = links.map(link => ({
+                    element: link,
+                    filename: link.textContent,
+                    score: fuzzyScore(searchTerm, link.textContent)
+                }))
+                    .filter(item => item.score > 30)
+                    .sort((a, b) => b.score - a.score);
+
+                // Hide all first
+                links.forEach(link => link.parentElement.style.display = 'none');
+
+                // Show matches
+                scored.forEach(item => {
+                    item.element.parentElement.style.display = '';
+                    item.element.innerHTML = highlightMatch(item.filename, searchTerm);
+
+                    // Show parent folders
+                    let parent = item.element.closest('details');
+                    while (parent) {
+                        parent.style.display = '';
+                        parent.open = true;
+                        parent = parent.parentElement.closest('details');
+                    }
+                });
+
+                // Hide empty folders
+                document.querySelectorAll('details').forEach(details => {
+                    const hasVisible = Array.from(details.querySelectorAll('.file-link')).some(
+                        link => link.parentElement.style.display !== 'none'
+                    );
+                    if (!hasVisible) details.style.display = 'none';
+                });
+
+                searchStats.textContent = `Found ${scored.length} match${scored.length !== 1 ? 'es' : ''} out of ${files.length} files`;
+            });
+
+            // Normalize path helper (remove trailing slash and extension)
+            const normalize = (p) => decodeURIComponent(p).replace(/\/$/, "").replace(/\.(html|md)$/, "");
+            const currentPath = normalize(window.location.pathname);
+
+            links.forEach(link => {
+                const linkPath = normalize(new URL(link.href).pathname);
+                if (currentPath === linkPath) {
+                    link.style.fontWeight = "bold";
+                    link.style.color = "#d03939";
+
+                    let parent = link.closest("details");
+                    while (parent) {
+                        parent.open = true;
+                        parent = parent.parentElement.closest("details");
+                    }
+                }
+            });
+
+            // Restore scroll position after Async Render AND Expansion
+            const sidebarContent = document.querySelector('.sidebar-content');
+            if (sidebarContent) {
+                const savedScroll = localStorage.getItem("sidebar_scroll_position");
+                if (savedScroll) {
+                    // Use a small timeout to ensure DOM layout has updated after expansion
+                    setTimeout(() => {
+                        sidebarContent.scrollTop = parseInt(savedScroll, 10);
+                    }, 0);
+                }
+            }
+        })
+        .catch(err => {
+            console.error('Failed to load files:', err);
+            document.getElementById('file-tree-container').innerHTML = `
+                <div style="padding: 20px; color: red;">
+                    <div style="font-weight: bold; margin-bottom: 6px;">Failed to load files</div>
+                    <div style="font-size: 12px; white-space: pre-wrap;">${String(err)}</div>
+                    <div style="font-size: 12px; margin-top: 10px; color: #444;">
+                        Make sure <code>assets/files.json</code> exists in the deployed site.
+                        If you're building locally, run <code>python3 scripts/generate_files_json.py</code> before <code>jekyll build/serve</code>.
+                    </div>
+                </div>`;
+        });
+</script>

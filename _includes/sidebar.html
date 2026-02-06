@@ -1,0 +1,259 @@
+<!-- Fuzzy Search Input -->
+<div
+  style="padding: 10px; position: sticky; top: 0; background: white; z-index: 100; border-bottom: 2px solid #e0e0e0;">
+  <input type="text" id="fuzzy-search-input" placeholder="🔍 Fuzzy search files..."
+    style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+  <div id="search-stats" style="font-size: 11px; color: #666; margin-top: 5px; min-height: 16px;"></div>
+</div>
+
+{% assign pages = site.pages | where_exp: "p", "p.path contains '.md'" | natural_sort: "path" %}
+{% assign empty_array = "" | split: "," %}
+{% assign previous_dir_parts = empty_array %}
+
+<ul class="file-tree" id="file-tree">
+  {% for p in pages %}
+  {% assign parts = p.path | split: "/" %}
+  {% assign filename = parts.last %}
+
+  {% unless filename contains "index" or filename contains "404" %}
+  {% assign depth = parts.size | minus: 1 %}
+  {% assign common_depth = 0 %}
+  {% for i in (0..depth) %}
+  {% if i == depth or i == previous_dir_parts.size %}{% break %}{% endif %}
+  {% if parts[i] == previous_dir_parts[i] %}
+  {% assign common_depth = common_depth | plus: 1 %}
+  {% else %}
+  {% break %}
+  {% endif %}
+  {% endfor %}
+
+  {% assign previous_depth = previous_dir_parts.size %}
+  {% assign close_count = previous_depth | minus: common_depth %}
+  {% for i in (1..close_count) %}</ul>
+</details>
+</li>{% endfor %}
+
+{% assign current_path_build = "" %}
+{% for i in (0..depth) %}
+{% capture current_path_build %}{{ current_path_build }}/{{ parts[i] }}{% endcapture %}
+{% endfor %}
+
+{% comment %} Re-calculate path for ID generation {% endcomment %}
+{% assign path_so_far = "" %}
+{% for i in (0..common_depth) %}
+{% if i == depth %}{% break %}{% endif %}
+{% capture path_so_far %}{{ path_so_far }}/{{ parts[i] }}{% endcapture %}
+{% endfor %}
+
+{% for i in (common_depth..depth) %}
+{% if i == depth %}{% break %}{% endif %}
+{% assign folder_name = parts[i] %}
+{% capture path_so_far %}{{ path_so_far }}/{{ folder_name }}{% endcapture %}
+{% assign folder_id = path_so_far | replace: "/", "-" | replace: ".", "-" | slugify %}
+{% assign slash_count = path_so_far | split: "/" | size %}
+<li>
+  <details id="folder{{ folder_id }}" {% if slash_count==2 %}open{% endif %}>
+    <summary style="cursor: pointer;">📂 <strong>{{ folder_name }}</strong></summary>
+    <ul>
+      {% endfor %}
+
+      <li><a href="{{ p.url | relative_url }}" class="file-link">{{ filename }}</a></li>
+
+      {% assign current_dir_parts_str = "" %}
+      {% for i in (0..depth) %}
+      {% if i == depth %}{% break %}{% endif %}
+      {% capture current_dir_parts_str %}{{ current_dir_parts_str }},{{ parts[i] }}{% endcapture %}
+      {% endfor %}
+      {% assign previous_dir_parts = current_dir_parts_str | remove_first: "," | split: "," %}
+      {% endunless %}
+      {% endfor %}
+
+      {% for i in (1..previous_dir_parts.size) %}
+    </ul>
+  </details>
+</li>{% endfor %}
+</ul>
+
+<script>
+  // Levenshtein distance for fuzzy matching
+  function levenshteinDistance(str1, str2) {
+    const len1 = str1.length;
+    const len2 = str2.length;
+    const matrix = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+
+    for (let i = 0; i <= len1; i++) matrix[i][0] = i;
+    for (let j = 0; j <= len2; j++) matrix[0][j] = j;
+
+    for (let i = 1; i <= len1; i++) {
+      for (let j = 1; j <= len2; j++) {
+        const cost = str1[i - 1].toLowerCase() === str2[j - 1].toLowerCase() ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,      // deletion
+          matrix[i][j - 1] + 1,      // insertion
+          matrix[i - 1][j - 1] + cost // substitution
+        );
+      }
+    }
+    return matrix[len1][len2];
+  }
+
+  // Calculate fuzzy match score (0-100, higher is better)
+  function fuzzyScore(searchTerm, target) {
+    if (!searchTerm) return 100;
+    if (!target) return 0;
+
+    const search = searchTerm.toLowerCase();
+    const targetLower = target.toLowerCase();
+
+    // Exact match bonus
+    if (targetLower === search) return 100;
+
+    // Contains bonus
+    if (targetLower.includes(search)) return 90;
+
+    // Levenshtein distance scoring
+    const distance = levenshteinDistance(search, targetLower);
+    const maxLen = Math.max(search.length, targetLower.length);
+    const similarity = 1 - (distance / maxLen);
+
+    return Math.round(similarity * 80); // Scale to 0-80 range
+  }
+
+  // Highlight matching characters
+  function highlightMatch(text, searchTerm) {
+    if (!searchTerm) return text;
+
+    const regex = new RegExp(`(${searchTerm.split('').join('.*?')})`, 'gi');
+    return text.replace(regex, '<mark style="background: yellow; font-weight: bold;">$1</mark>');
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    const searchInput = document.getElementById('fuzzy-search-input');
+    const searchStats = document.getElementById('search-stats');
+    const fileTree = document.getElementById('file-tree');
+
+    // Store all file links with metadata
+    const allFiles = [];
+    document.querySelectorAll('.file-link').forEach(link => {
+      const li = link.closest('li');
+      const filename = link.textContent.trim();
+      const path = link.getAttribute('href');
+
+      allFiles.push({
+        element: li,
+        link: link,
+        filename: filename,
+        path: path,
+        originalHTML: link.innerHTML
+      });
+    });
+
+    // Fuzzy search functionality
+    searchInput.addEventListener('input', function (e) {
+      const searchTerm = e.target.value.trim();
+
+      if (!searchTerm) {
+        // Reset view
+        allFiles.forEach(file => {
+          file.element.style.display = '';
+          file.link.innerHTML = file.originalHTML;
+        });
+
+        // Reset all folder visibility
+        document.querySelectorAll('details').forEach(details => {
+          const wasOpen = localStorage.getItem(details.id) === 'open';
+          details.style.display = '';
+          if (wasOpen) details.open = true;
+        });
+
+        searchStats.textContent = '';
+        return;
+      }
+
+      // Score and filter files
+      const scoredFiles = allFiles.map(file => ({
+        ...file,
+        score: fuzzyScore(searchTerm, file.filename)
+      }))
+        .filter(file => file.score > 30) // Threshold for matching
+        .sort((a, b) => b.score - a.score); // Sort by score descending
+
+      // Hide all files first
+      allFiles.forEach(file => {
+        file.element.style.display = 'none';
+        file.link.innerHTML = file.originalHTML;
+      });
+
+      // Show and highlight matched files
+      scoredFiles.forEach(file => {
+        file.element.style.display = '';
+        file.link.innerHTML = highlightMatch(file.filename, searchTerm);
+
+        // Show parent folders
+        let parent = file.element.closest('details');
+        while (parent) {
+          parent.style.display = '';
+          parent.open = true;
+          parent = parent.parentElement.closest('details');
+        }
+      });
+
+      // Hide empty folders
+      document.querySelectorAll('details').forEach(details => {
+        const hasVisibleChildren = Array.from(details.querySelectorAll('li')).some(
+          li => li.style.display !== 'none'
+        );
+        if (!hasVisibleChildren) {
+          details.style.display = 'none';
+        }
+      });
+
+      // Update stats
+      searchStats.textContent = `Found ${scoredFiles.length} match${scoredFiles.length !== 1 ? 'es' : ''} out of ${allFiles.length} files`;
+    });
+
+    // 1. Restore state from localStorage
+    const detailsElements = document.querySelectorAll("details");
+    detailsElements.forEach(details => {
+      const id = details.id;
+      if (id && localStorage.getItem(id) === "open") {
+        details.open = true;
+      }
+
+      // 2. Save state on toggle
+      details.addEventListener("toggle", function () {
+        if (details.open) {
+          localStorage.setItem(id, "open");
+        } else {
+          localStorage.removeItem(id);
+        }
+      });
+    });
+
+    // 3. Highlight active link and expand parents
+    const currentUrl = window.location.pathname;
+    const links = document.querySelectorAll(".file-link");
+
+    links.forEach(link => {
+      // Robust matching for GitHub Pages (subfolders) & Localhost
+      // tailored for Jekyll URLs which might end in / or .html
+      const currentPath = window.location.pathname.replace(/\/$/, ""); // Remove trailing slash
+      const linkPath = new URL(link.href).pathname.replace(/\/$/, "");
+
+      // Check if the current browser path ends with the link path
+      // This handles the user's repository prefix case automatically
+      if (currentPath === linkPath || currentPath.endsWith(linkPath)) {
+        link.style.fontWeight = "bold";
+        link.style.color = "#d03939"; // Highlight color
+
+        // Expand all parent details
+        let parent = link.closest("details");
+        while (parent) {
+          parent.open = true;
+          localStorage.setItem(parent.id, "open"); // Also save this state
+          parent = parent.parentElement.closest("details");
+        }
+      }
+    });
+  });
+</script>
